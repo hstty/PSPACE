@@ -4,11 +4,44 @@ import subprocess
 import sys
 import shutil
 import argparse
+import collections.abc
+import copy
 
 import toml
 import html as _html
 
 from threading import Thread
+
+def deep_update(d, u):
+    """
+    ネストされた辞書を再帰的に更新する。
+    u のキーと値を d にマージする。
+    """
+    for k, v in u.items():
+        if isinstance(v, collections.abc.Mapping):
+            d[k] = deep_update(d.get(k, {}), v)
+        else:
+            d[k] = v
+    return d
+
+def compare_configs(original, updated, path=""):
+    """
+    2つの設定辞書を再帰的に比較し、変更点を文字列のリストとして返す。
+    """
+    changes = []
+    # 追加されたキーと変更されたキーをチェック
+    for key, updated_value in updated.items():
+        new_path = f"{path}.{key}" if path else key
+        if key not in original:
+            changes.append(f"  [追加] {new_path} = {updated_value}")
+        else:
+            original_value = original[key]
+            if isinstance(updated_value, dict) and isinstance(original_value, dict):
+                changes.extend(compare_configs(original_value, updated_value, path=new_path))
+            elif original_value != updated_value:
+                changes.append(f"  [変更] {new_path}: {original_value} -> {updated_value}")
+    
+    return changes
 
 def run_command_and_stream_output(command, folder_name):
     """
@@ -163,14 +196,14 @@ def run_training_with_retry(command, temp_config_file, config, program_directory
 
 # 引数を解析
 parser = argparse.ArgumentParser(description='LoRA学習スクリプト')
-parser.add_argument('--body', action='store_true', help='全身画像用の設定を適用（face_crop_aug_rangeを削除）')
+parser.add_argument('--add', type=str, help='追加で読み込むTOML設定ファイル')
 args = parser.parse_args()
 
 print("\n" + "="*50)
-if args.body:
-    print("|| 全身（体用）モードで学習を開始します。 ||")
+if args.add:
+    print(f"|| 追加設定ファイル '{args.add}' を使用して学習を開始します。 ||")
 else:
-    print("|| 顔用モードで学習を開始します。 ||")
+    print("|| 標準設定で学習を開始します。 ||")
 print("="*50 + "\n")
 
 # 環境設定ファイルを読み込む
@@ -244,11 +277,36 @@ for folder in folders:
         print(f"エラー: 学習設定ファイル '{os.path.join(program_directory, train_config_file)}' が見つかりません。")
         continue
 
-    # --body引数が指定されている場合、face_crop_aug_rangeを削除
-    if args.body:
-        if 'face_crop_aug_range' in config:
-            del config['face_crop_aug_range']
-            print("全身画像モード: face_crop_aug_range を設定から削除しました。")
+    # --add引数が指定されている場合、設定をマージ
+    if args.add:
+        additional_config_path = os.path.join(program_directory, args.add)
+        try:
+            with open(additional_config_path, 'r', encoding='utf-8') as f:
+                additional_config = toml.load(f)
+            
+            print(f"追加設定ファイル '{args.add}' の内容をマージします。")
+            
+            # マージ前の状態をディープコピー
+            original_config = copy.deepcopy(config)
+            
+            # 再帰的に設定を更新
+            config = deep_update(config, additional_config)
+
+            # 変更点を比較して表示
+            changes = compare_configs(original_config, config)
+            if changes:
+                print("以下の設定が更新されました:", flush=True)
+                for change in changes:
+                    print(change, flush=True)
+            else:
+                print("設定の変更はありませんでした。", flush=True)
+            print("-" * 20, flush=True)
+
+
+        except FileNotFoundError:
+            print(f"警告: 追加設定ファイル '{additional_config_path}' が見つかりません。スキップします。")
+        except Exception as e:
+            print(f"警告: 追加設定ファイル '{additional_config_path}' の読み込みまたはマージ中にエラーが発生しました: {e}")
 
 
     config['train_data_dir'] = os.path.join(working_directory, folder)
