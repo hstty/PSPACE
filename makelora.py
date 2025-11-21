@@ -99,9 +99,15 @@ def run_command_and_stream_output(command, folder_name):
                                 except Exception:
                                     pass
                     else:
-                        # 通常のターミナルではそのまま出力（改行や\rを保持）
+                        # ターミナル環境での処理を改善
                         try:
-                            sys.stdout.write(line)
+                            # プログレスバーの行か判定 (tqdmの一般的な出力形式を想定)
+                            if line.strip().startswith("steps:") and ("it/s" in line or "s/it" in line):
+                                # 行末の改行を削除し、キャリッジリターンを付けて出力
+                                sys.stdout.write(line.rstrip() + '\r')
+                            else:
+                                # それ以外の行はそのまま出力
+                                sys.stdout.write(line)
                             sys.stdout.flush()
                         except Exception:
                             try:
@@ -199,17 +205,22 @@ parser = argparse.ArgumentParser(description='LoRA学習スクリプト')
 parser.add_argument('--add', type=str, help='追加で読み込むTOML設定ファイル')
 args = parser.parse_args()
 
-print("\n" + "="*50)
-if args.add:
-    print(f"|| 追加設定ファイル '{args.add}' を使用して学習を開始します。 ||")
-else:
-    print("|| 標準設定で学習を開始します。 ||")
-print("="*50 + "\n")
+# ヘッダー表示
+print("\n" + "="*54)
+print("||" + " LoRA学習プロセスを開始します ".center(50) + "||")
+print("="*54 + "\n")
 
 # 環境設定ファイルを読み込む
 env_config_file = "PSPACE_env.toml"
-with open(env_config_file, 'r', encoding='utf-8') as f:
-    env_config = toml.load(f)
+try:
+    with open(env_config_file, 'r', encoding='utf-8') as f:
+        env_config = toml.load(f)
+except FileNotFoundError:
+    print(f"エラー: 環境設定ファイル '{env_config_file}' が見つかりません。")
+    sys.exit(1)
+
+print("[1] 環境設定の読み込み")
+print(f"- メイン環境設定: {env_config_file}")
 
 paths = env_config.get('paths', {})
 acc_opts = env_config.get('accelerate_options', {})
@@ -223,6 +234,18 @@ if not output_suffix or not train_config_file:
     print(f"エラー: '{env_config_file}' に 'output_suffix' と 'train_config_file' を設定してください。")
     sys.exit(1)
 
+# --addが指定された場合、output_suffixを変更
+if args.add:
+    add_filename_without_ext = os.path.splitext(os.path.basename(args.add))[0]
+    new_output_suffix = f"{output_suffix}-{add_filename_without_ext}"
+    print(f"-> 'output_suffix' を '{output_suffix}' -> '{new_output_suffix}' に変更しました。")
+    output_suffix = new_output_suffix
+
+print(f"- 基本学習設定: {train_config_file}")
+if args.add:
+    print(f"- 追加学習設定: {args.add}")
+print("-" * 20, flush=True)
+
 # パス設定
 base_directory = paths.get('base_directory', '/notebooks')
 working_directory = os.path.join(base_directory, paths.get('working_directory', 'training'))
@@ -235,12 +258,11 @@ train_script_path = paths.get('train_script_path', '/kohya_ss/sd-scripts/sdxl_tr
 processed_folders = []
 skipped_folders = []
 
-# ディレクトリ移動とフォルダ一覧取得
+# フォルダ一覧取得
+print("\n[2] 処理対象の検出")
+print(f"- ワーキングディレクトリ: {working_directory}")
 try:
-    # working_directory のフルパスで一覧を取得してから移動するようにする
     all_entries = os.listdir(working_directory)
-    print(f"working_directory='{working_directory}' から検出したエントリ: {all_entries}")
-
     folders = []
     for entry in all_entries:
         full_path = os.path.join(working_directory, entry)
@@ -250,64 +272,81 @@ try:
             else:
                 folders.append(entry)
         else:
-            # ディレクトリでないエントリはスキップ対象として記録（任意）
-            # skipped_folders.append(f"{entry} (ファイルのためスキップ)")
-            pass
+            # ディレクトリでないエントリはスキップ対象として記録
+            skipped_folders.append(f"{entry} (ファイルのためスキップ)")
 
-    print(f"処理対象フォルダ: {folders}", flush=True)
+    print("- 処理対象フォルダ:")
+    if folders:
+        for folder in folders:
+            print(f"  - {folder}")
+    else:
+        print("  (なし)")
+
     if skipped_folders:
-        print(f"処理対象外のエントリ: {skipped_folders}", flush=True)
+        print("- 処理対象外:")
+        for item in skipped_folders:
+            print(f"  - {item}")
+    print("-" * 20, flush=True)
 
+except FileNotFoundError:
+    print(f"エラー: working_directory '{working_directory}' が見つかりません。")
+    sys.exit(1)
+
+# ベースとなる設定を準備
+try:
+    with open(os.path.join(program_directory, train_config_file), 'r', encoding='utf-8') as f:
+        base_config = toml.load(f)
+except FileNotFoundError:
+    print(f"エラー: 基本学習設定ファイル '{os.path.join(program_directory, train_config_file)}' が見つかりません。")
+    sys.exit(1)
+
+# --add引数が指定されている場合、設定をマージ
+if args.add:
+    print("\n[3] 設定のマージと確認")
+    additional_config_path = os.path.join(program_directory, args.add)
+    try:
+        with open(additional_config_path, 'r', encoding='utf-8') as f:
+            additional_config = toml.load(f)
+        
+        print(f"- '{args.add}' の内容を基本設定にマージします。")
+        
+        original_config = copy.deepcopy(base_config)
+        base_config = deep_update(base_config, additional_config)
+
+        changes = compare_configs(original_config, base_config)
+        if changes:
+            print("- 変更された設定:")
+            for change in changes:
+                print(f"  {change}")
+        else:
+            print("- 設定の変更はありませんでした。")
+        print("-" * 20, flush=True)
+
+    except FileNotFoundError:
+        print(f"警告: 追加設定ファイル '{additional_config_path}' が見つかりません。スキップします。")
+    except Exception as e:
+        print(f"警告: 追加設定ファイル '{additional_config_path}' の読み込みまたはマージ中にエラーが発生しました: {e}")
+
+# ディレクトリ移動
+try:
     os.chdir(working_directory)
 except FileNotFoundError:
+    # このエラーは上でキャッチされるはずだが念のため
     print(f"エラー: working_directory '{working_directory}' が見つかりません。")
     sys.exit(1)
 
 os.chdir(kohya_directory)
 
+print("\n" + "="*54)
+print("||" + " 各フォルダの学習を開始します ".center(50) + "||")
+print("="*54 + "\n")
+
 # 各フォルダに対して処理を実行
 for folder in folders:
     temp_config_file = os.path.join(temp_directory, f'{folder}_{output_suffix}.toml')
     
-    # 学習設定ファイルを読み込み、内容を更新
-    try:
-        with open(os.path.join(program_directory, train_config_file), 'r', encoding='utf-8') as f:
-            config = toml.load(f)
-    except FileNotFoundError:
-        print(f"エラー: 学習設定ファイル '{os.path.join(program_directory, train_config_file)}' が見つかりません。")
-        continue
-
-    # --add引数が指定されている場合、設定をマージ
-    if args.add:
-        additional_config_path = os.path.join(program_directory, args.add)
-        try:
-            with open(additional_config_path, 'r', encoding='utf-8') as f:
-                additional_config = toml.load(f)
-            
-            print(f"追加設定ファイル '{args.add}' の内容をマージします。")
-            
-            # マージ前の状態をディープコピー
-            original_config = copy.deepcopy(config)
-            
-            # 再帰的に設定を更新
-            config = deep_update(config, additional_config)
-
-            # 変更点を比較して表示
-            changes = compare_configs(original_config, config)
-            if changes:
-                print("以下の設定が更新されました:", flush=True)
-                for change in changes:
-                    print(change, flush=True)
-            else:
-                print("設定の変更はありませんでした。", flush=True)
-            print("-" * 20, flush=True)
-
-
-        except FileNotFoundError:
-            print(f"警告: 追加設定ファイル '{additional_config_path}' が見つかりません。スキップします。")
-        except Exception as e:
-            print(f"警告: 追加設定ファイル '{additional_config_path}' の読み込みまたはマージ中にエラーが発生しました: {e}")
-
+    # ベース設定をコピーして、フォルダ固有の設定を追加
+    config = copy.deepcopy(base_config)
 
     config['train_data_dir'] = os.path.join(working_directory, folder)
     config['output_name'] = f'{folder}_{output_suffix}'
