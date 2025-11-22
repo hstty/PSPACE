@@ -47,5 +47,8 @@ train_data_dir = "/home/user/ai/lora/training"
 wandb_run_name = "jiangshen-NAIL6-MY"
 xformers = true
 flip_aug = true
-face_crop_aug_range = "1.0,1.2"
+face_crop_aug_range = "1.0,1.0"
 network_dropout = 0.1
+scale_weight_norms = 1
+noise_offset = 0.025
+

@@ -1,0 +1,3 @@
+save_every_n_steps = 20
+save_last_n_steps = 200
+max_train_steps = 570

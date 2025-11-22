@@ -344,44 +344,93 @@ print("="*54 + "\n")
 # 各フォルダに対して処理を実行
 for folder in folders:
     temp_config_file = os.path.join(temp_directory, f'{folder}_{output_suffix}.toml')
-    
-    # ベース設定をコピーして、フォルダ固有の設定を追加
-    config = copy.deepcopy(base_config)
+    original_model_path = None
+    temp_model_path = None
+    result = None
+    should_skip = False
 
-    config['train_data_dir'] = os.path.join(working_directory, folder)
-    config['output_name'] = f'{folder}_{output_suffix}'
-    config['output_dir'] = os.path.join(base_directory, paths.get('output_dir'))
-    config['pretrained_model_name_or_path'] = os.path.join(base_directory, paths.get('pretrained_model_name_or_path'))
+    try:
+        # ベース設定をコピーして、フォルダ固有の設定を追加
+        config = copy.deepcopy(base_config)
 
+        config['train_data_dir'] = os.path.join(working_directory, folder)
+        config['output_name'] = f'{folder}_{output_suffix}'
+        config['output_dir'] = os.path.join(base_directory, paths.get('output_dir'))
 
-    with open(temp_config_file, 'w', encoding='utf-8') as f:
-        toml.dump(config, f)
+        # モデルファイルの移動処理
+        original_model_path = os.path.join(base_directory, paths.get('pretrained_model_name_or_path'))
+        config['pretrained_model_name_or_path'] = original_model_path
 
-    # コマンドを構築
-    command = (
-        f'{accelerate_path} launch ' 
-        f'--dynamo_backend {acc_opts.get("dynamo_backend", "no")} ' 
-        f'--dynamo_mode {acc_opts.get("dynamo_mode", "default")} ' 
-        f'--mixed_precision {acc_opts.get("mixed_precision", "bf16")} ' 
-        f'--num_processes {acc_opts.get("num_processes", 1)} ' 
-        f'--num_machines {acc_opts.get("num_machines", 1)} ' 
-        f'--num_cpu_threads_per_process {acc_opts.get("num_cpu_threads_per_process", 2)} ' 
-        f'"{train_script_path}" ' 
-        f'--config_file "{temp_config_file}" ' 
-        f'--log_prefix={train_opts.get("log_prefix", "xl-loha")} ' 
-    )
+        if not original_model_path or not os.path.isabs(original_model_path):
+            print(f"[{folder}] 警告: pretrained_model_name_or_path が設定されていないか、絶対パスではありません。モデルの移動をスキップします。", flush=True)
+            temp_model_path = None
+        else:
+            model_filename = os.path.basename(original_model_path)
+            temp_model_path = os.path.join(temp_directory, model_filename)
 
-    # print(command) # デバッグ用にコマンド全体を表示する場合はコメントアウトを解除
-    result = run_training_with_retry(command, temp_config_file, config, program_directory, folder)
+            if os.path.abspath(original_model_path) != os.path.abspath(temp_model_path):
+                if os.path.exists(original_model_path):
+                    print(f"[{folder}] モデルファイル {model_filename} を一時ディレクトリに移動します...", flush=True)
+                    shutil.move(original_model_path, temp_model_path)
+                    config['pretrained_model_name_or_path'] = temp_model_path
+                elif os.path.exists(temp_model_path):
+                    print(f"[{folder}] モデルファイル {model_filename} は既に一時ディレクトリに存在します。パスを更新します。", flush=True)
+                    config['pretrained_model_name_or_path'] = temp_model_path
+                else:
+                    print(f"[{folder}] エラー: モデルファイルが見つかりません: {original_model_path}", flush=True)
+                    skipped_folders.append(f"{folder} (モデルファイル欠落のためスキップ)")
+                    should_skip = True
+            else:
+                print(f"[{folder}] モデルファイルは既に一時ディレクトリにあります。", flush=True)
+        
+        if should_skip:
+            continue
+
+        with open(temp_config_file, 'w', encoding='utf-8') as f:
+            toml.dump(config, f)
+
+        # コマンドを構築
+        command = (
+            f'{accelerate_path} launch '
+            f'--dynamo_backend {acc_opts.get("dynamo_backend", "no")} '
+            f'--dynamo_mode {acc_opts.get("dynamo_mode", "default")} '
+            f'--mixed_precision {acc_opts.get("mixed_precision", "bf16")} '
+            f'--num_processes {acc_opts.get("num_processes", 1)} '
+            f'--num_machines {acc_opts.get("num_machines", 1)} '
+            f'--num_cpu_threads_per_process {acc_opts.get("num_cpu_threads_per_process", 2)} '
+            f'"{train_script_path}" '
+            f'--config_file "{temp_config_file}" '
+            f'--log_prefix={train_opts.get("log_prefix", "xl-loha")} '
+        )
+
+        result = run_training_with_retry(command, temp_config_file, config, program_directory, folder)
+
+    finally:
+        # モデルを元の場所に戻す
+        if original_model_path and temp_model_path and os.path.exists(temp_model_path):
+            if os.path.abspath(original_model_path) != os.path.abspath(temp_model_path):
+                print(f"[{folder}] モデルファイル {os.path.basename(temp_model_path)} を元の場所に戻します...", flush=True)
+                try:
+                    os.makedirs(os.path.dirname(original_model_path), exist_ok=True)
+                    shutil.move(temp_model_path, original_model_path)
+                except Exception as e:
+                    print(f"[{folder}] 警告: モデルファイルの復元に失敗しました: {e}", flush=True)
+
+    if should_skip:
+        continue
 
     # 実行結果のハンドリング
-    if result.returncode != 0:
+    if result is None or result.returncode != 0:
         print(f"処理失敗: {folder}。フォルダは削除されませんでした。")
-        if result.stderr:
+        if result and result.stderr:
             print("----- Stderr -----")
             print(result.stderr.strip())
             print("--------------------")
-        os.remove(temp_config_file)
+        try:
+            if os.path.exists(temp_config_file):
+                os.remove(temp_config_file)
+        except Exception as e:
+            print(f"警告: {temp_config_file} の削除に失敗しました: {e}", flush=True)
         continue
 
     # 成功した場合の出力を表示
@@ -396,15 +445,12 @@ for folder in folders:
         output_dir = os.path.join(base_directory, paths.get('output_dir'))
         rclone_config_path = os.path.join(program_directory, 'rclone.conf')
         print("学習済みモデルをアップロードします...", flush=True)
-        # PSPACE_env.toml の [rclone].remote_path を使い、末尾に /output を追加
         remote_path = env_config.get('rclone', {}).get('remote_path', 'google:runpod/AI')
         rclone_target = f"{remote_path.rstrip('/')}/output"
         rclone_command = f"rclone --config {rclone_config_path} copy {output_dir} {rclone_target}"
-        # rclone の出力を取得してエラーの種類を判定する
         rclone_result = subprocess.run(rclone_command, shell=True, capture_output=True, text=True)
         if rclone_result.returncode != 0:
             rclone_output = (rclone_result.stdout or "") + "\n" + (rclone_result.stderr or "")
-            # Google Drive の容量超過を示すエラーを検出したら、ユーザーに知らせてプログラムを終了する
             if 'storageQuotaExceeded' in rclone_output or "Drive storage quota" in rclone_output or "The user's Drive storage quota has been exceeded" in rclone_output:
                 print("エラー: Google Drive の容量が超過しています。アップロードを中止し、プログラムを終了します。フォルダは削除されません。", flush=True)
                 print("rclone 出力:", flush=True)
@@ -413,7 +459,6 @@ for folder in folders:
             else:
                 print(f"アップロードに失敗しました（returncode={rclone_result.returncode}）。フォルダは削除されません。出力:", flush=True)
                 print(rclone_output, flush=True)
-                # 他のエラーの場合はこのフォルダは削除せず次へ進む
                 try:
                     os.remove(temp_config_file)
                 except Exception as e:
@@ -429,8 +474,7 @@ for folder in folders:
 
     print("アップロードが完了しました。", flush=True)
 
-    # Google Drive のゴミ箱を空にする（rclone cleanup）
-    # PSPACE_env.toml の [rclone].empty_trash_after_upload で制御（デフォルト True）
+    # Google Drive のゴミ箱を空にする
     try:
         empty_trash = env_config.get('rclone', {}).get('empty_trash_after_upload', True)
         if empty_trash:
@@ -482,6 +526,7 @@ for folder in folders:
             print(f"警告: {temp_config_file} の削除に失敗しました: {e}", flush=True)
     except Exception as e:
         print(f"警告: フォルダ削除処理中に予期しないエラーが発生しました: {e}", flush=True)
+
 
 # 全ての処理が完了した後にメッセージを表示
 print("\n" + "="*50)
