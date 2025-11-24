@@ -6,6 +6,8 @@ import shutil
 import argparse
 import collections.abc
 import copy
+import zipfile
+import glob
 
 import toml
 import html as _html
@@ -255,11 +257,37 @@ temp_directory = paths.get('temp_directory', '/tmp')
 accelerate_path = paths.get('accelerate_path', '/venv/bin/accelerate')
 train_script_path = paths.get('train_script_path', '/kohya_ss/sd-scripts/sdxl_train_network.py')
 
+# ZIPファイルの自動解凍処理
+print("\n[2] ZIPファイルの解凍処理")
+print(f"- 検索ディレクトリ: {working_directory}")
+try:
+    zip_files = glob.glob(os.path.join(working_directory, '*.zip'))
+    if not zip_files:
+        print("- 解凍対象のZIPファイルはありませんでした。")
+    else:
+        for zip_path in zip_files:
+            zip_filename = os.path.basename(zip_path)
+            print(f"- ZIPファイルを検出: {zip_filename}")
+            try:
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(working_directory)
+                print(f"  - {zip_filename} を正常に解凍しました。")
+                os.remove(zip_path)
+                print(f"  - 元のファイル {zip_filename} を削除しました。")
+            except zipfile.BadZipFile:
+                print(f"  - エラー: {zip_filename} は壊れているか、無効なZIPファイルです。")
+            except Exception as e:
+                print(f"  - エラー: {zip_filename} の処理中に問題が発生しました: {e}")
+except Exception as e:
+    print(f"- ZIPファイルの検索中にエラーが発生しました: {e}")
+print("-" * 20, flush=True)
+
+
 processed_folders = []
 skipped_folders = []
 
 # フォルダ一覧取得
-print("\n[2] 処理対象の検出")
+print("\n[3] 処理対象の検出")
 print(f"- ワーキングディレクトリ: {working_directory}")
 try:
     all_entries = os.listdir(working_directory)
@@ -302,7 +330,7 @@ except FileNotFoundError:
 
 # --add引数が指定されている場合、設定をマージ
 if args.add:
-    print("\n[3] 設定のマージと確認")
+    print("\n[4] 設定のマージと確認")
     additional_config_path = os.path.join(program_directory, args.add)
     try:
         with open(additional_config_path, 'r', encoding='utf-8') as f:

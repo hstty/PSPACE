@@ -29,7 +29,7 @@ min_bucket_reso = 768
 min_snr_gamma = 5
 mixed_precision = "bf16"
 network_alpha = 64
-network_args = []
+network_args = ["rank_dropout=0.12", "module_dropout=0.0"]
 network_dim = 128
 network_module = "networks.lora"
 noise_offset_type = "Original"
@@ -47,8 +47,8 @@ train_data_dir = "/home/user/ai/lora/training"
 wandb_run_name = "jiangshen-NAIL6-MY"
 xformers = true
 flip_aug = true
-face_crop_aug_range = "1.0,1.0"
-network_dropout = 0.1
+face_crop_aug_range = "1.0,1.2"
+network_dropout = 0.17
 scale_weight_norms = 1
 noise_offset = 0.025
 
