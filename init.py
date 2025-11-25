@@ -74,34 +74,46 @@ def check_rclone_and_reauthenticate():
         print("--------------------------------------------------")
 
 
-def copy_train_util_to_kohya():
+def apply_train_util_patch():
     """
-    ワークスペース内の同じフォルダにある `train_util.py` を
-    `/kohya_ss/sd-scripts/library/train_util.py` に上書きコピーします。
+    ワークスペース内の `train_util.patch` を使って
+    `/kohya_ss/sd-scripts/library/train_util.py` にパッチを適用します。
     """
     script_dir_local = os.path.dirname(os.path.abspath(__file__))
-    src = os.path.join(script_dir_local, 'train_util.py')
-    dest = os.path.normpath('/kohya_ss/sd-scripts/library/train_util.py')
+    patch_file = os.path.join(script_dir_local, 'train_util.patch')
+    target_file = os.path.normpath('/kohya_ss/sd-scripts/library/train_util.py')
+    working_dir = os.path.normpath('/kohya_ss')
 
-    print(f"\n--- `train_util.py` を {dest} に上書きコピーします ---")
+    print(f"\n--- `train_util.py` にパッチを適用します ---")
 
-    if not os.path.exists(src):
-        print(f"ソースファイルが見つかりません: {src}")
+    if not os.path.exists(patch_file):
+        print(f"パッチファイルが見つかりません: {patch_file}")
         return
 
+    if not os.path.exists(target_file):
+        print(f"ターゲットファイルが見つかりません: {target_file}")
+        return
+
+    if not os.path.exists(working_dir):
+        print(f"作業ディレクトリが見つかりません: {working_dir}")
+        return
+
+    # git apply コマンドの構築
+    # --ignore-whitespace: 空白の違いを無視 (CRLF/LF対策)
+    # --verbose: 詳細出力
+    command = ["git", "apply", "--verbose", "--ignore-whitespace", patch_file]
+    
     try:
-        dest_dir = os.path.dirname(dest)
-        if not os.path.exists(dest_dir):
-            os.makedirs(dest_dir, exist_ok=True)
-            print(f"宛先ディレクトリを作成しました: {dest_dir}")
+        print(f"作業ディレクトリ: {working_dir}")
+        print(f"コマンド: {' '.join(command)}")
+        
+        subprocess.run(command, cwd=working_dir, check=True)
+        print(f"[成功] パッチを適用しました。")
 
-        shutil.copy2(src, dest)
-        print(f"[成功] {src} を {dest} にコピーしました。")
-
-    except PermissionError:
-        print(f"[エラー] ファイルアクセス権が拒否されました: {dest} (管理者権限が必要かもしれません)")
+    except subprocess.CalledProcessError as e:
+        print(f"[エラー] パッチの適用に失敗しました。既適用か、ファイルが一致しない可能性があります。")
     except Exception as e:
-        print(f"[エラー] コピー中に予期せぬエラーが発生しました: {e}")
+        print(f"[エラー] 予期せぬエラーが発生しました: {e}")
 
 
 def remove_dot_hidden_dirs_from_base(env_toml_path=None, dry_run=False, verbose=True):
@@ -194,11 +206,11 @@ if __name__ == "__main__":
 
     check_rclone_and_reauthenticate()
 
-    # 実行時に kohya_ss 用の train_util.py を上書きコピーする（失敗しても継続）
+    # 実行時に kohya_ss 用の train_util.py にパッチを適用する（失敗しても継続）
     try:
-        copy_train_util_to_kohya()
+        apply_train_util_patch()
     except Exception:
-        print('`train_util.py` の上書き処理でエラーが発生しましたが、処理を継続します。')
+        print('`train_util.py` へのパッチ適用でエラーが発生しましたが、処理を継続します。')
 
     # base_directory 内の先頭が '.' の隠しフォルダを削除（デフォルトは実行）
     try:
