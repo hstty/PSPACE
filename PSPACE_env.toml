@@ -33,6 +33,6 @@ filename = "novaAsianXL_illustriousV70.safetensors"
 save_dir = "/notebooks/model/"
 
 [rclone]
-remote_path = "google:runpod/AI"
+remote_path = "google:LORA"
 empty_trash_after_upload = true
 

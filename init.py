@@ -81,8 +81,23 @@ def apply_train_util_patch():
     """
     script_dir_local = os.path.dirname(os.path.abspath(__file__))
     patch_file = os.path.join(script_dir_local, 'train_util.patch')
-    target_file = os.path.normpath('/kohya_ss/sd-scripts/library/train_util.py')
-    working_dir = os.path.normpath('/kohya_ss')
+    
+    # PSPACE_env.toml から kohya_directory を取得
+    env_path = os.path.join(script_dir_local, 'PSPACE_env.toml')
+    kohya_dir = '/kohya_ss' # デフォルト
+    try:
+        import toml
+        if os.path.exists(env_path):
+            try:
+                cfg = toml.load(env_path)
+                kohya_dir = cfg.get('paths', {}).get('kohya_directory', kohya_dir)
+            except Exception:
+                pass # 読み込み失敗時はデフォルトを使用
+    except ImportError:
+        pass # tomlがない場合はデフォルトを使用
+
+    target_file = os.path.normpath(os.path.join(kohya_dir, 'sd-scripts/library/train_util.py'))
+    working_dir = os.path.normpath(kohya_dir)
 
     print(f"\n--- `train_util.py` にパッチを適用します ---")
 
