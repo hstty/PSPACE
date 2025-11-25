@@ -289,7 +289,8 @@ try:
             print(f"    stdout: {delete_result.stdout}")
             print(f"    stderr: {delete_result.stderr}")
         
-        # ステップ2: 空のサブディレクトリを削除（trainingフォルダ自体は残る）
+        # ステップ2: 空のサブディレクトリを削除
+        # rmdirs は親フォルダも削除する可能性があるため、実行後にmkdirで再作成してフォルダ維持を保証する
         rmdirs_command = f"rclone --config {rclone_config_path} rmdirs {remote_training_path}"
         rmdirs_result = subprocess.run(rmdirs_command, shell=True, capture_output=True, text=True)
         
@@ -299,6 +300,11 @@ try:
             print(f"  - 警告: サブディレクトリ削除に失敗しました。")
             print(f"    stdout: {rmdirs_result.stdout}")
             print(f"    stderr: {rmdirs_result.stderr}")
+
+        # ステップ3: trainingフォルダ自体を再作成（存在保証）
+        # これにより、rmdirsでtrainingフォルダごと消えてしまっても復活させる
+        mkdir_command = f"rclone --config {rclone_config_path} mkdir {remote_training_path}"
+        subprocess.run(mkdir_command, shell=True, capture_output=True, text=True)
         
         print(f"- リモートの中身を削除しました（{remote_training_path}フォルダは残っています）。")
     else:
