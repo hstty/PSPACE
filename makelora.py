@@ -257,8 +257,61 @@ temp_directory = paths.get('temp_directory', '/tmp')
 accelerate_path = paths.get('accelerate_path', '/venv/bin/accelerate')
 train_script_path = paths.get('train_script_path', '/kohya_ss/sd-scripts/sdxl_train_network.py')
 
+# rcloneでリモートからファイルをダウンロード
+print("\n[2] リモートからファイルをダウンロード")
+try:
+    rclone_config_path = os.path.join(program_directory, 'rclone.conf')
+    remote_path = env_config.get('rclone', {}).get('remote_path', 'google:lora')
+    remote_training_path = f"{remote_path.rstrip('/')}/training"
+    
+    print(f"- リモートパス: {remote_training_path}")
+    print(f"- ダウンロード先: {working_directory}")
+    
+    # rclone copy コマンドでファイルをダウンロード
+    download_command = f"rclone --config {rclone_config_path} copy {remote_training_path} {working_directory}"
+    print(f"- 実行コマンド: {download_command}")
+    download_result = subprocess.run(download_command, shell=True, capture_output=True, text=True)
+    
+    if download_result.returncode == 0:
+        print("- ダウンロードが正常に完了しました。")
+        
+        # ダウンロード成功後、リモートの中身を全て削除（trainingフォルダ自体は残す）
+        print(f"- リモートの中身を削除します（{remote_training_path}フォルダは残します）")
+        
+        # ステップ1: 全てのファイルを削除
+        delete_command = f"rclone --config {rclone_config_path} delete {remote_training_path}"
+        delete_result = subprocess.run(delete_command, shell=True, capture_output=True, text=True)
+        
+        if delete_result.returncode == 0:
+            print("  - ファイルを削除しました。")
+        else:
+            print(f"  - 警告: ファイル削除に失敗しました。")
+            print(f"    stdout: {delete_result.stdout}")
+            print(f"    stderr: {delete_result.stderr}")
+        
+        # ステップ2: 空のサブディレクトリを削除（trainingフォルダ自体は残る）
+        rmdirs_command = f"rclone --config {rclone_config_path} rmdirs {remote_training_path}"
+        rmdirs_result = subprocess.run(rmdirs_command, shell=True, capture_output=True, text=True)
+        
+        if rmdirs_result.returncode == 0:
+            print("  - サブディレクトリを削除しました。")
+        else:
+            print(f"  - 警告: サブディレクトリ削除に失敗しました。")
+            print(f"    stdout: {rmdirs_result.stdout}")
+            print(f"    stderr: {rmdirs_result.stderr}")
+        
+        print(f"- リモートの中身を削除しました（{remote_training_path}フォルダは残っています）。")
+    else:
+        print(f"- 警告: ダウンロードに失敗しました。")
+        print(f"  stdout: {download_result.stdout}")
+        print(f"  stderr: {download_result.stderr}")
+        
+except Exception as e:
+    print(f"- エラー: rcloneダウンロード処理中に予期しないエラーが発生しました: {e}")
+print("-" * 20, flush=True)
+
 # ZIPファイルの自動解凍処理
-print("\n[2] ZIPファイルの解凍処理")
+print("\n[3] ZIPファイルの解凍処理")
 print(f"- 検索ディレクトリ: {working_directory}")
 try:
     zip_files = glob.glob(os.path.join(working_directory, '*.zip'))
@@ -287,7 +340,7 @@ processed_folders = []
 skipped_folders = []
 
 # フォルダ一覧取得
-print("\n[3] 処理対象の検出")
+print("\n[4] 処理対象の検出")
 print(f"- ワーキングディレクトリ: {working_directory}")
 try:
     all_entries = os.listdir(working_directory)
@@ -330,7 +383,7 @@ except FileNotFoundError:
 
 # --add引数が指定されている場合、設定をマージ
 if args.add:
-    print("\n[4] 設定のマージと確認")
+    print("\n[5] 設定のマージと確認")
     additional_config_path = os.path.join(program_directory, args.add)
     try:
         with open(additional_config_path, 'r', encoding='utf-8') as f:
