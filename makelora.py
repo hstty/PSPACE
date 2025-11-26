@@ -11,6 +11,8 @@ import glob
 
 import toml
 import html as _html
+import signal
+import time
 
 from threading import Thread
 
@@ -18,9 +20,12 @@ def deep_update(d, u):
     """
     ネストされた辞書を再帰的に更新する。
     u のキーと値を d にマージする。
+    値が '**delete**' の場合、そのキーを d から削除する。
     """
     for k, v in u.items():
-        if isinstance(v, collections.abc.Mapping):
+        if v == "**delete**":
+            d.pop(k, None)
+        elif isinstance(v, collections.abc.Mapping):
             d[k] = deep_update(d.get(k, {}), v)
         else:
             d[k] = v
@@ -42,6 +47,12 @@ def compare_configs(original, updated, path=""):
                 changes.extend(compare_configs(original_value, updated_value, path=new_path))
             elif original_value != updated_value:
                 changes.append(f"  [変更] {new_path}: {original_value} -> {updated_value}")
+    
+    # 削除されたキーをチェック
+    for key in original.keys():
+        if key not in updated:
+            new_path = f"{path}.{key}" if path else key
+            changes.append(f"  [削除] {new_path}")
     
     return changes
 
@@ -124,7 +135,35 @@ def run_command_and_stream_output(command, folder_name):
     stdout_thread.start()
     stderr_thread.start()
 
-    process.wait() # プロセスの終了を待つ
+    try:
+        process.wait() # プロセスの終了を待つ
+    except KeyboardInterrupt:
+        # ユーザーによる中断時、サブプロセスを確実に終了させる
+        print(f"\n[中断] ユーザーによる中断を検知しました。サブプロセス (PID: {process.pid}) を終了します...", flush=True)
+        try:
+            # まずは優しく終了
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # 応答がない場合は強制終了
+                print(f"[中断] サブプロセスが応答しません。強制終了 (kill) します...", flush=True)
+                process.kill()
+                process.wait()
+        except Exception as e:
+            print(f"[中断] サブプロセスの終了中にエラーが発生しました: {e}", flush=True)
+        raise # 上位に例外を伝播させる
+    finally:
+        # 念のため、プロセスがまだ生きていれば終了させる
+        if process.poll() is None:
+             try:
+                process.terminate()
+                process.wait(timeout=1)
+             except:
+                try:
+                    process.kill()
+                except:
+                    pass
 
     stdout_thread.join()
     stderr_thread.join()
@@ -205,6 +244,7 @@ def run_training_with_retry(command, temp_config_file, config, program_directory
 # 引数を解析
 parser = argparse.ArgumentParser(description='LoRA学習スクリプト')
 parser.add_argument('--add', type=str, help='追加で読み込むTOML設定ファイル')
+parser.add_argument('--test', action='store_true', help='テストモード。学習完了後にフォルダを削除しません。')
 args = parser.parse_args()
 
 # ヘッダー表示
@@ -497,11 +537,34 @@ for folder in folders:
         if original_model_path and temp_model_path and os.path.exists(temp_model_path):
             if os.path.abspath(original_model_path) != os.path.abspath(temp_model_path):
                 print(f"[{folder}] モデルファイル {os.path.basename(temp_model_path)} を元の場所に戻します...", flush=True)
+                
+                # クリーンアップ中のSIGINT (CTRL+C) を一時的にブロックして、移動処理を保護する
+                original_sigint_handler = signal.getsignal(signal.SIGINT)
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                
                 try:
-                    os.makedirs(os.path.dirname(original_model_path), exist_ok=True)
-                    shutil.move(temp_model_path, original_model_path)
+                    # リトライロジック付きで移動
+                    max_retries = 5
+                    for i in range(max_retries):
+                        try:
+                            os.makedirs(os.path.dirname(original_model_path), exist_ok=True)
+                            shutil.move(temp_model_path, original_model_path)
+                            print(f"[{folder}] モデルファイルを正常に復元しました。", flush=True)
+                            break
+                        except PermissionError:
+                            if i < max_retries - 1:
+                                print(f"[{folder}] ファイルがロックされています。1秒後に再試行します... ({i+1}/{max_retries})", flush=True)
+                                time.sleep(1)
+                            else:
+                                raise
+                        except Exception:
+                            raise
                 except Exception as e:
                     print(f"[{folder}] 警告: モデルファイルの復元に失敗しました: {e}", flush=True)
+                    print(f"[{folder}] 重要: モデルファイルは一時ディレクトリに残っています: {temp_model_path}", flush=True)
+                finally:
+                    # シグナルハンドラを復元
+                    signal.signal(signal.SIGINT, original_sigint_handler)
 
     if should_skip:
         continue
@@ -600,12 +663,16 @@ for folder in folders:
     # 成功時のみフォルダ削除
     try:
         folder_path = os.path.join(working_directory, folder)
-        try:
-            shutil.rmtree(folder_path)
-            print(f'正常終了: {folder_path} を削除しました。', flush=True)
-            processed_folders.append(folder)
-        except OSError as e:
-            print(f"エラー: {folder_path} の削除に失敗しました - {e}", flush=True)
+        if args.test:
+             print(f"テストモード: {folder_path} の削除をスキップします。", flush=True)
+             processed_folders.append(folder)
+        else:
+            try:
+                shutil.rmtree(folder_path)
+                print(f'正常終了: {folder_path} を削除しました。', flush=True)
+                processed_folders.append(folder)
+            except OSError as e:
+                print(f"エラー: {folder_path} の削除に失敗しました - {e}", flush=True)
         
         try:
             os.remove(temp_config_file)
