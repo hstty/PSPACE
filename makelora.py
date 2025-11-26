@@ -84,6 +84,14 @@ def run_command_and_stream_output(command, folder_name):
     except Exception:
         display_handle = None
 
+    # 出力表示用のロック
+    print_lock = None
+    try:
+        from threading import Lock
+        print_lock = Lock()
+    except ImportError:
+        pass
+
     def reader(pipe, container, stream_name):
         try:
             with pipe:
@@ -114,14 +122,27 @@ def run_command_and_stream_output(command, folder_name):
                     else:
                         # ターミナル環境での処理を改善
                         try:
-                            # プログレスバーの行か判定 (tqdmの一般的な出力形式を想定)
-                            if line.strip().startswith("steps:") and ("it/s" in line or "s/it" in line):
-                                # 行末の改行を削除し、キャリッジリターンを付けて出力
-                                sys.stdout.write(line.rstrip() + '\r')
-                            else:
-                                # それ以外の行はそのまま出力
-                                sys.stdout.write(line)
-                            sys.stdout.flush()
+                            # ロックを取得して出力を同期
+                            if print_lock:
+                                print_lock.acquire()
+                            
+                            try:
+                                # プログレスバーの行か判定 (tqdmの一般的な出力形式を想定)
+                                if line.strip().startswith("steps:") and ("it/s" in line or "s/it" in line):
+                                    # 行末の改行を削除し、キャリッジリターンを付けて出力
+                                    # 前の行をクリアしてから出力することで、ゴミが残るのを防ぐ
+                                    sys.stdout.write('\r' + line.rstrip())
+                                else:
+                                    # それ以外の行（ログなど）は、行頭に戻ってから出力し、改行する
+                                    # 前の行（プログレスバー）の残骸を消すためにスペースで埋める
+                                    # ターミナル幅が不明なため、十分に長いスペースを出力してから \r で戻る
+                                    sys.stdout.write('\r' + ' ' * 150 + '\r')
+                                    sys.stdout.write(line)
+                                sys.stdout.flush()
+                            finally:
+                                if print_lock:
+                                    print_lock.release()
+
                         except Exception:
                             try:
                                 print(line, end='', flush=True)

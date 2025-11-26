@@ -12,7 +12,7 @@ gradient_checkpointing = true
 huber_c = 0.1
 huber_scale = 1
 huber_schedule = "snr"
-learning_rate = 1.7e-5
+learning_rate = 2.3e-5
 loss_type = "smooth_l1"
 lr_scheduler = "cosine"
 lr_scheduler_args = []
@@ -28,8 +28,8 @@ max_train_steps = 400
 min_bucket_reso = 768
 min_snr_gamma = 5
 mixed_precision = "bf16"
-network_alpha = 128
-network_args = ["rank_dropout=0.10", "module_dropout=0.0"]
+network_alpha = 64
+network_args = ["rank_dropout=0.12", "module_dropout=0.0"]
 network_dim = 128
 network_module = "networks.lora"
 noise_offset_type = "Original"
@@ -48,6 +48,7 @@ wandb_run_name = "jiangshen-NAIL6-MY"
 xformers = true
 flip_aug = true
 face_crop_aug_range = "1.0,1.2"
-network_dropout = 0.15
+network_dropout = 0.17
 scale_weight_norms = 1
+noise_offset = 0.025
 
