@@ -1,3 +1,0 @@
-network_args = ["rank_dropout=0.10", "module_dropout=0.0"]
-network_dropout = 0.15
-learning_rate = 2e-5

@@ -1,3 +1,6 @@
+#paperspaceのjupyter lab上のコンソールで実行するプログラム。
+#ipynbとWindowsには対応しなくていい。
+
 import os
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 import subprocess
@@ -75,15 +78,6 @@ def run_command_and_stream_output(command, folder_name):
     stdout_lines = []
     stderr_lines = []
 
-    # Jupyter 環境向けに、出力表示を上書きできる DisplayHandle を作る
-    display_handle = None
-    try:
-        # IPython があれば display_id を使って上書き表示を試みる
-        from IPython.display import display, HTML
-        display_handle = display(HTML("<pre></pre>"), display_id=True)
-    except Exception:
-        display_handle = None
-
     # 出力表示用のロック
     print_lock = None
     try:
@@ -91,6 +85,9 @@ def run_command_and_stream_output(command, folder_name):
         print_lock = Lock()
     except ImportError:
         pass
+
+    # 共有ステータス (epoch情報など)
+    status_info = {'epoch': ''}
 
     def reader(pipe, container, stream_name):
         try:
@@ -103,51 +100,45 @@ def run_command_and_stream_output(command, folder_name):
                         print(f"Error appending line to container: {e}", flush=True)
                         continue
 
-                    # Jupyter の表示ハンドルがあれば、全バッファを HTML の <pre> で更新して上書き表示する
-                    if display_handle is not None:
+                    try:
+                        # ロックを取得して出力を同期
+                        if print_lock:
+                            print_lock.acquire()
+                        
                         try:
-                            # HTML に埋める前にエスケープ
-                            text = _html.escape(''.join(container))
-                            display_handle.update(HTML(f"<pre>{text}</pre>"))
-                        except Exception as e:
-                            # 失敗したら通常出力へ落とす（以降は display_handle を使わない）
-                            try:
-                                sys.stdout.write(line)
-                                sys.stdout.flush()
-                            except Exception:
-                                try:
-                                    print(line, end='', flush=True)
-                                except Exception:
-                                    pass
-                    else:
-                        # ターミナル環境での処理を改善
-                        try:
-                            # ロックを取得して出力を同期
-                            if print_lock:
-                                print_lock.acquire()
+                            stripped_line = line.strip()
                             
-                            try:
-                                # プログレスバーの行か判定 (tqdmの一般的な出力形式を想定)
-                                if line.strip().startswith("steps:") and ("it/s" in line or "s/it" in line):
-                                    # 行末の改行を削除し、キャリッジリターンを付けて出力
-                                    # 前の行をクリアしてから出力することで、ゴミが残るのを防ぐ
-                                    sys.stdout.write('\r' + line.rstrip())
-                                else:
-                                    # それ以外の行（ログなど）は、行頭に戻ってから出力し、改行する
-                                    # 前の行（プログレスバー）の残骸を消すためにスペースで埋める
-                                    # ターミナル幅が不明なため、十分に長いスペースを出力してから \r で戻る
-                                    sys.stdout.write('\r' + ' ' * 150 + '\r')
-                                    sys.stdout.write(line)
-                                sys.stdout.flush()
-                            finally:
-                                if print_lock:
-                                    print_lock.release()
+                            # epoch行の検出と保存 (表示はしない)
+                            if stripped_line.startswith("epoch") and "/" in stripped_line:
+                                status_info['epoch'] = stripped_line
+                                continue # この行は表示せずにスキップ
 
+                            # プログレスバーの行か判定 (tqdmの一般的な出力形式を想定)
+                            if stripped_line.startswith("steps:") and ("it/s" in line or "s/it" in line):
+                                # epoch情報があれば結合して表示
+                                display_line = stripped_line
+                                if status_info['epoch']:
+                                    display_line = f"{status_info['epoch']} | {display_line}"
+                                
+                                # 行頭に戻り、内容を表示し、行末までクリアする (ANSIエスケープシーケンス)
+                                # \r: 行頭に戻る
+                                # \033[K: カーソル位置から行末までクリア
+                                sys.stdout.write(f'\r{display_line}\033[K')
+                            else:
+                                # それ以外の行（ログなど）は、行頭に戻ってから出力し、改行する
+                                # 前の行（プログレスバー）の残骸を消すために行末クリアを入れる
+                                sys.stdout.write(f'\r{line.rstrip()}\033[K\n')
+                            
+                            sys.stdout.flush()
+                        finally:
+                            if print_lock:
+                                print_lock.release()
+
+                    except Exception:
+                        try:
+                            print(line, end='', flush=True)
                         except Exception:
-                            try:
-                                print(line, end='', flush=True)
-                            except Exception:
-                                pass
+                            pass
         except Exception as e:
             print(f"Error in reader thread: {e}", flush=True)
 

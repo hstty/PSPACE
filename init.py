@@ -203,6 +203,64 @@ def remove_dot_hidden_dirs_from_base(env_toml_path=None, dry_run=False, verbose=
     return removed
 
 
+def upload_program_files():
+    """
+    スクリプトと同じフォルダにある全ファイルを
+    PSPACE_env.toml の [rclone].remote_path + '/program/PSPACE' にアップロードします。
+    """
+    print("\n--- プログラムファイルのアップロード ---")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    rclone_config_path = os.path.join(script_dir, 'rclone.conf')
+    env_path = os.path.join(script_dir, 'PSPACE_env.toml')
+
+    # デフォルトのリモートパス
+    remote_base = "google:runpod/AI"
+    
+    try:
+        import toml
+        if os.path.exists(env_path):
+            try:
+                cfg = toml.load(env_path)
+                remote_base = cfg.get('rclone', {}).get('remote_path', remote_base)
+            except Exception:
+                pass
+    except ImportError:
+        pass
+
+    # アップロード先パスの構築
+    # 末尾のスラッシュ処理などはrcloneがよしなにやってくれるが、念のため綺麗に結合
+    # remote_base が "google:LORA" なら "google:LORA/program/PSPACE" になる
+    destination = f"{remote_base}/program/PSPACE".replace('//', '/')
+
+    print(f"アップロード元: {script_dir}")
+    print(f"アップロード先: {destination}")
+
+    # rclone copy コマンド
+    # --config: 設定ファイル指定
+    # --exclude: .gitフォルダなどを除外したい場合はここに追加
+    # ここでは "スクリプトと同じフォルダの全ファイル" なのでそのまま copy
+    command = [
+        "rclone",
+        "--config", rclone_config_path,
+        "copy",
+        script_dir,
+        destination,
+        "--exclude", ".*/**",      # .で始まる隠しフォルダ/ファイルを除外 (.git, .envなど)
+        "--exclude", "__pycache__/**",
+        "--exclude", "*.pyc",
+        "--exclude", "venv/**",
+        "--verbose"
+    ]
+
+    try:
+        subprocess.run(command, check=True)
+        print("[成功] ファイルのアップロードが完了しました。")
+    except subprocess.CalledProcessError as e:
+        print(f"[エラー] ファイルのアップロードに失敗しました: {e}")
+    except Exception as e:
+        print(f"[エラー] 予期せぬエラーが発生しました: {e}")
+
+
 # --- メイン処理 ---
 # このスクリプトが直接実行された場合に、以下の処理を開始します。
 if __name__ == "__main__":
@@ -220,6 +278,9 @@ if __name__ == "__main__":
         print("必要なパッケージが不足している可能性がありますが、処理は継続します。")
 
     check_rclone_and_reauthenticate()
+
+    # プログラムファイルのアップロードを実行
+    upload_program_files()
 
     # 実行時に kohya_ss 用の train_util.py にパッチを適用する（失敗しても継続）
     try:
