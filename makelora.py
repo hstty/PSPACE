@@ -309,6 +309,31 @@ temp_directory = paths.get('temp_directory', '/tmp')
 accelerate_path = paths.get('accelerate_path', '/venv/bin/accelerate')
 train_script_path = paths.get('train_script_path', '/kohya_ss/sd-scripts/sdxl_train_network.py')
 
+# Google Drive のゴミ箱を空にする
+try:
+    rclone_config = env_config.get('rclone', {})
+    # PSPACE_env.toml の [rclone] セクションで empty_trash_on_start = false が指定されていない限り実行
+    if rclone_config.get('empty_trash_on_start', True):
+        print("\n[+] リモートのゴミ箱を空にします")
+        rclone_config_path = os.path.join(program_directory, 'rclone.conf')
+        remote_path = rclone_config.get('remote_path', 'google:lora')
+        try:
+            remote_name = remote_path.split(':', 1)[0]
+        except Exception:
+            remote_name = remote_path
+
+        cleanup_cmd = f"rclone --config {rclone_config_path} cleanup {remote_name}:"
+        print(f"- 実行コマンド: rclone cleanup {remote_name}:")
+        cleanup_result = subprocess.run(cleanup_cmd, shell=True, capture_output=True, text=True)
+
+        if cleanup_result.returncode == 0:
+            print("- ゴミ箱を空にしました。")
+        else:
+            print(f"- 警告: ゴミ箱を空にする際にエラーが発生しました。\n  stdout: {cleanup_result.stdout}\n  stderr: {cleanup_result.stderr}")
+except Exception as e:
+    print(f"- エラー: rclone cleanup 処理中に予期しないエラーが発生しました: {e}")
+print("-" * 20, flush=True)
+
 # rcloneでリモートからファイルをダウンロード
 print("\n[2] リモートからファイルをダウンロード")
 try:
