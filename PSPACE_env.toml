@@ -3,7 +3,8 @@ base_directory = "/notebooks"
 working_directory = "training"
 program_directory = "program"
 output_dir = "output"
-pretrained_model_name_or_path = "model/novaAsianXL_illustriousV70.safetensors"
+model_dir = "model"
+pretrained_model_name_or_path = "novaAsianXL_illustriousV70.safetensors"
 temp_directory = "/tmp"
 accelerate_path = "/venv/bin/accelerate"
 kohya_directory = "/kohya_ss"
@@ -29,8 +30,7 @@ token = "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"
 
 [[modeldownload.models]]
 repo_id = "hstty/basemodel"
-filename = "novaAsianXL_illustriousV70.safetensors"
-save_dir = "/notebooks/model/"
+# filename is deprecated inside model entries. Use [paths].pretrained_model_name_or_path instead.
 
 [rclone]
 remote_path = "google:LORA"

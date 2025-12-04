@@ -28,15 +28,16 @@ def _load_toml_file(path):
         with open(path, "r", encoding="utf-8") as f:
             return toml.load(f)
 
-def download_model(repo_id, filename, save_dir, token=None):
+def download_model(repo_id, filename, model_dir, token=None):
     """
     Hugging Face Hubから指定されたモデルファイルをダウンロードする。
+    保存先は `model_dir` を使います（`save_dir` は廃止）。
     """
     try:
         # 保存先ディレクトリが存在しない場合は作成
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-            logger.info(f"作成されたディレクトリ: {save_dir}")
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+            logger.info(f"作成されたディレクトリ: {model_dir}")
 
         logger.info(f"'{repo_id}/{filename}' のダウンロードを開始します（キャッシュは永続化しません）...")
 
@@ -54,7 +55,7 @@ def download_model(repo_id, filename, save_dir, token=None):
 
             logger.info(f"ダウンロード完了（一時キャッシュ）: {downloaded_path}")
 
-            final_path = os.path.join(save_dir, filename)
+            final_path = os.path.join(model_dir, filename)
             # ダウンロード済ファイルを保存先へコピー（上書き）
             shutil.copy2(downloaded_path, final_path)
             logger.info(f"モデルを '{final_path}' に保存しました。")
@@ -94,17 +95,45 @@ def main():
     if not hf_token:
         logger.warning("[modeldownload] に API トークンが設定されていません。プライベートリポジトリのダウンロードは失敗する可能性があります。")
 
+    # paths セクションから base_directory と model_dir を取得し、保存先ディレクトリを決定する
+    paths_cfg = config.get("paths", {}) if isinstance(config, dict) else {}
+    base_directory = paths_cfg.get("base_directory", ".")
+    paths_model_dir = paths_cfg.get("model_dir", "model")
+
+    # 組み立てルール: `paths.model_dir` が絶対パスであればそのまま使用。
+    # そうでなければ `base_directory` と結合して使用する。
+    if os.path.isabs(paths_model_dir):
+        default_model_dir = paths_model_dir
+    else:
+        default_model_dir = os.path.join(base_directory, paths_model_dir)
+
+    # `filename` を各モデルエントリで指定する方法を廃止します。
+    # 代わりに `[paths].pretrained_model_name_or_path` を使ってファイル名を指定してください。
+    paths_pretrained = paths_cfg.get("pretrained_model_name_or_path")
+    if not paths_pretrained:
+        logger.error("'[paths].pretrained_model_name_or_path' が設定されていません。ダウンロードするファイル名を指定してください。")
+        return
+
     models = model_section.get("models")
     if models and isinstance(models, list):
         for model_info in models:
             repo_id = model_info.get("repo_id")
-            filename = model_info.get("filename")
-            save_dir = model_info.get("save_dir", ".")  # デフォルトはカレントディレクトリ
+
+            # `filename` は廃止。残っている場合は警告するが値は使用しない。
+            if "filename" in model_info:
+                logger.warning("[modeldownload] のモデル定義内の 'filename' は廃止されました。'[paths].pretrained_model_name_or_path' を使用してください。")
+
+            # `model_dir` も廃止 (paths 側を使用)
+            if "model_dir" in model_info:
+                logger.warning("[modeldownload] のモデル定義内の 'model_dir' は廃止されました。'[paths].model_dir' を使用してください。")
+
+            model_dir = default_model_dir
+            filename = paths_pretrained
 
             if repo_id and filename:
-                download_model(repo_id, filename, save_dir, token=hf_token)
+                download_model(repo_id, filename, model_dir, token=hf_token)
             else:
-                logger.warning(f"設定項目が不足しています（repo_idまたはfilename）: {model_info}")
+                logger.warning(f"設定項目が不足しています（repo_idまたはpaths.pretrained_model_name_or_path）: {model_info}")
     else:
         logger.error("'[modeldownload].models' のリストが PSPACE_env.toml に見つかりません。")
 

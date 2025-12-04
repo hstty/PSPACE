@@ -522,15 +522,24 @@ for folder in folders:
         config['output_dir'] = os.path.join(base_directory, paths.get('output_dir'))
 
         # モデルファイルの移動処理
-        original_model_path = os.path.join(base_directory, paths.get('pretrained_model_name_or_path'))
-        config['pretrained_model_name_or_path'] = original_model_path
-
-        if not original_model_path or not os.path.isabs(original_model_path):
-            print(f"[{folder}] 警告: pretrained_model_name_or_path が設定されていないか、絶対パスではありません。モデルの移動をスキップします。", flush=True)
+        # `PSPACE_env.toml` では `pretrained_model_name_or_path` をファイル名のみで指定する想定
+        # そのため `model_dir` と結合して実際のパスを作成する
+        model_dir_setting = paths.get('model_dir', '.')
+        pretrained_name = paths.get('pretrained_model_name_or_path')
+        if not pretrained_name:
+            print(f"[{folder}] 警告: pretrained_model_name_or_path が設定されていません。モデルの移動をスキップします。", flush=True)
             temp_model_path = None
+            should_skip = True
         else:
-            model_filename = os.path.basename(original_model_path)
-            temp_model_path = os.path.join(temp_directory, model_filename)
+            original_model_path = os.path.join(base_directory, model_dir_setting, pretrained_name)
+            config['pretrained_model_name_or_path'] = original_model_path
+
+            if not os.path.isabs(original_model_path):
+                print(f"[{folder}] 警告: 作成した original_model_path が絶対パスではありません。モデルの移動をスキップします。", flush=True)
+                temp_model_path = None
+            else:
+                model_filename = os.path.basename(original_model_path)
+                temp_model_path = os.path.join(temp_directory, model_filename)
 
             if os.path.abspath(original_model_path) != os.path.abspath(temp_model_path):
                 if os.path.exists(original_model_path):
