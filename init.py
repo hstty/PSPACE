@@ -235,14 +235,14 @@ def upload_program_files():
     print(f"アップロード元: {script_dir}")
     print(f"アップロード先: {destination}")
 
-    # rclone copy コマンド
+    # rclone sync コマンド
     # --config: 設定ファイル指定
     # --exclude: .gitフォルダなどを除外したい場合はここに追加
-    # ここでは "スクリプトと同じフォルダの全ファイル" なのでそのまま copy
+    # sync はソースとデスティネーションを完全に同期します（削除も含む）
     command = [
         "rclone",
         "--config", rclone_config_path,
-        "copy",
+        "sync",
         script_dir,
         destination,
         "--exclude", ".*/**",      # .で始まる隠しフォルダ/ファイルを除外 (.git, .envなど)

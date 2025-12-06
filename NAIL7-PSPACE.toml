@@ -24,12 +24,12 @@ max_data_loader_n_workers = 0
 max_grad_norm = 0.5
 max_timestep = 1000
 max_token_length = 75
-max_train_steps = 650
+max_train_steps = 680
 min_bucket_reso = 768
 min_snr_gamma = 5
 mixed_precision = "bf16"
 network_alpha = 128
-network_args = ["rank_dropout=0.055", "module_dropout=0.0"]
+network_args = ["rank_dropout=0.015", "module_dropout=0.0"]
 network_dim = 128
 network_module = "networks.lora"
 noise_offset_type = "Original"
@@ -47,6 +47,5 @@ train_data_dir = "/home/user/ai/lora/training"
 wandb_run_name = "jiangshen-NAIL6-MY"
 xformers = true
 flip_aug = true
-face_crop_aug_range = "1.0,2.5"
-network_dropout = 0.11
+network_dropout = 0.03
 
