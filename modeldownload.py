@@ -93,7 +93,11 @@ def main():
 
     hf_token = model_section.get("token")
     if not hf_token:
-        logger.warning("[modeldownload] に API トークンが設定されていません。プライベートリポジトリのダウンロードは失敗する可能性があります。")
+        logger.info("[modeldownload] に API トークンが設定されていません。")
+        hf_token = input("Hugging Face API トークンを入力してください（不要な場合はEnterキー）: ").strip()
+        if not hf_token:
+            logger.warning("API トークンが入力されませんでした。プライベートリポジトリのダウンロードは失敗する可能性があります。")
+            hf_token = None
 
     # paths セクションから base_directory と model_dir を取得し、保存先ディレクトリを決定する
     paths_cfg = config.get("paths", {}) if isinstance(config, dict) else {}

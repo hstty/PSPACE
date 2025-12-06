@@ -26,7 +26,6 @@ output_suffix = "NA7"
 train_config_file = "NAIL7-PSPACE.toml"
 
 [modeldownload]
-token = "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"
 
 [[modeldownload.models]]
 repo_id = "hstty/basemodel"
