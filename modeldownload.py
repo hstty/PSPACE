@@ -4,6 +4,7 @@ import shutil
 import sys
 import subprocess
 import importlib.util
+import getpass
 from logging import getLogger, basicConfig, INFO
 
 # ロギングの設定
@@ -27,6 +28,28 @@ def _load_toml_file(path):
         # フォールバックで toml パッケージを使う
         with open(path, "r", encoding="utf-8") as f:
             return toml.load(f)
+
+def is_ipython_or_jupyter():
+    """IPythonまたはJupyter環境で実行されているかを検出する"""
+    try:
+        # 方法1: get_ipython()関数が存在するかチェック
+        get_ipython()  # type: ignore
+        return True
+    except NameError:
+        pass
+    
+    try:
+        # 方法2: __IPYTHON__変数が存在するかチェック
+        __IPYTHON__  # type: ignore
+        return True
+    except NameError:
+        pass
+    
+    # 方法3: sys.modulesにIPythonが含まれているかチェック
+    if 'IPython' in sys.modules:
+        return True
+    
+    return False
 
 def download_model(repo_id, filename, model_dir, token=None):
     """
@@ -92,9 +115,57 @@ def main():
         return
 
     hf_token = model_section.get("token")
+    
+    # 環境変数からトークンを読み取る（Jupyter notebook対応）
+    if not hf_token:
+        hf_token = os.environ.get("HF_TOKEN", "").strip()
+        if hf_token:
+            logger.info("環境変数 HF_TOKEN からトークンを読み込みました。")
+    
     if not hf_token:
         logger.info("[modeldownload] に API トークンが設定されていません。")
-        hf_token = input("Hugging Face API トークンを入力してください（不要な場合はEnterキー）: ").strip()
+        logger.info("以下のいずれかの方法でトークンを設定してください:")
+        logger.info("  1. PSPACE_env.toml の [modeldownload] に token = \"your_token\" を追加")
+        logger.info("  2. 環境変数 HF_TOKEN を設定（Jupyter: %env HF_TOKEN=your_token）")
+        logger.info("  3. 対話式入力（以下のプロンプト）")
+        
+        # Jupyter/IPython環境かどうかをチェック
+        in_jupyter = is_ipython_or_jupyter()
+        
+        if in_jupyter:
+            # Jupyter環境では必ずinput()を使用
+            logger.info("Jupyter/IPython環境を検出しました。")
+            logger.warning("!python で実行している場合は入力できません。")
+            logger.warning("代わりに以下のように実行してください:")
+            logger.warning("  %env HF_TOKEN=your_token_here")
+            logger.warning("  !python modeldownload.py")
+            try:
+                hf_token = input("Hugging Face API トークンを入力してください（不要な場合はEnterキー）: ").strip()
+            except (EOFError, OSError) as e:
+                logger.error(f"標準入力が利用できません: {e}")
+                logger.error("環境変数 HF_TOKEN を設定してください。")
+                hf_token = ""
+            except Exception as e:
+                logger.error(f"トークン入力に失敗しました: {e}")
+                hf_token = ""
+        else:
+            # 通常の環境でも、まずinput()を試す（より互換性が高い）
+            try:
+                # 環境変数でgetpassを強制する場合のみgetpassを使用
+                use_getpass = os.environ.get('USE_GETPASS', '').lower() in ('true', '1', 'yes')
+                
+                if use_getpass:
+                    hf_token = getpass.getpass("Hugging Face API トークンを入力してください（不要な場合はEnterキー）: ").strip()
+                else:
+                    hf_token = input("Hugging Face API トークンを入力してください（不要な場合はEnterキー）: ").strip()
+            except Exception as e:
+                logger.warning(f"トークン入力エラー: {e}")
+                try:
+                    hf_token = input("Hugging Face API トークンを入力してください（不要な場合はEnterキー）: ").strip()
+                except Exception as e2:
+                    logger.error(f"トークン入力に失敗しました（フォールバック）: {e2}")
+                    hf_token = ""
+        
         if not hf_token:
             logger.warning("API トークンが入力されませんでした。プライベートリポジトリのダウンロードは失敗する可能性があります。")
             hf_token = None
@@ -118,28 +189,19 @@ def main():
         logger.error("'[paths].pretrained_model_name_or_path' が設定されていません。ダウンロードするファイル名を指定してください。")
         return
 
-    models = model_section.get("models")
-    if models and isinstance(models, list):
-        for model_info in models:
-            repo_id = model_info.get("repo_id")
+    # [modeldownload] セクションから直接 repo_id を取得
+    repo_id = model_section.get("repo_id")
+    if not repo_id:
+        logger.error("'[modeldownload].repo_id' が設定されていません。")
+        return
 
-            # `filename` は廃止。残っている場合は警告するが値は使用しない。
-            if "filename" in model_info:
-                logger.warning("[modeldownload] のモデル定義内の 'filename' は廃止されました。'[paths].pretrained_model_name_or_path' を使用してください。")
+    model_dir = default_model_dir
+    filename = paths_pretrained
 
-            # `model_dir` も廃止 (paths 側を使用)
-            if "model_dir" in model_info:
-                logger.warning("[modeldownload] のモデル定義内の 'model_dir' は廃止されました。'[paths].model_dir' を使用してください。")
-
-            model_dir = default_model_dir
-            filename = paths_pretrained
-
-            if repo_id and filename:
-                download_model(repo_id, filename, model_dir, token=hf_token)
-            else:
-                logger.warning(f"設定項目が不足しています（repo_idまたはpaths.pretrained_model_name_or_path）: {model_info}")
+    if repo_id and filename:
+        download_model(repo_id, filename, model_dir, token=hf_token)
     else:
-        logger.error("'[modeldownload].models' のリストが PSPACE_env.toml に見つかりません。")
+        logger.error("設定項目が不足しています（repo_idまたはpaths.pretrained_model_name_or_path）")
 
 
 if __name__ == "__main__":

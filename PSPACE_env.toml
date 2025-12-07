@@ -26,10 +26,7 @@ output_suffix = "NA7"
 train_config_file = "NAIL7-PSPACE.toml"
 
 [modeldownload]
-
-[[modeldownload.models]]
 repo_id = "hstty/basemodel"
-# filename is deprecated inside model entries. Use [paths].pretrained_model_name_or_path instead.
 
 [rclone]
 remote_path = "google:LORA"

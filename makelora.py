@@ -62,8 +62,16 @@ def compare_configs(original, updated, path=""):
 def run_command_and_stream_output(command, folder_name):
     """
     コマンドを実行し、出力をリアルタイムで表示する。
+    Jupyter Notebook環境では、IPython.displayを使って出力を上書き表示し、スクロールを最小限に抑える。
     完了後、標準出力と標準エラーの全文を返す。
     """
+    # Jupyter環境の検出
+    try:
+        from IPython.display import clear_output
+        is_jupyter = True
+    except ImportError:
+        is_jupyter = False
+    
     print(f"実行コマンド: {command}", flush=True)
     process = subprocess.Popen(
         command,
@@ -72,7 +80,7 @@ def run_command_and_stream_output(command, folder_name):
         stderr=subprocess.PIPE,
         text=True,
         encoding='utf-8',
-        bufsize=1 # 行バッファリングを有効にする
+        bufsize=1
     )
 
     stdout_lines = []
@@ -86,8 +94,14 @@ def run_command_and_stream_output(command, folder_name):
     except ImportError:
         pass
 
-    # 共有ステータス (epoch情報など)
-    status_info = {'epoch': ''}
+    # 共有ステータス (epoch情報、プログレスバー、最終更新時刻など)
+    status_info = {
+        'epoch': '',
+        'progress': '',
+        'last_update': 0,
+        'important_logs': [],  # エラーや重要なメッセージを保持
+        'training_started': False  # 学習が開始されたかどうか（初期化メッセージを表示するため）
+    }
 
     def reader(pipe, container, stream_name):
         try:
@@ -108,28 +122,99 @@ def run_command_and_stream_output(command, folder_name):
                         try:
                             stripped_line = line.strip()
                             
-                            # epoch行の検出と保存 (表示はしない)
+                            # epoch行の検出と保存
                             if stripped_line.startswith("epoch") and "/" in stripped_line:
                                 status_info['epoch'] = stripped_line
-                                continue # この行は表示せずにスキップ
-
-                            # プログレスバーの行か判定 (tqdmの一般的な出力形式を想定)
-                            if stripped_line.startswith("steps:") and ("it/s" in line or "s/it" in line):
-                                # epoch情報があれば結合して表示
-                                display_line = stripped_line
-                                if status_info['epoch']:
-                                    display_line = f"{status_info['epoch']} | {display_line}"
-                                
-                                # 行頭に戻り、内容を表示し、行末までクリアする (ANSIエスケープシーケンス)
-                                # \r: 行頭に戻る
-                                # \033[K: カーソル位置から行末までクリア
-                                sys.stdout.write(f'\r{display_line}\033[K')
-                            else:
-                                # それ以外の行（ログなど）は、行頭に戻ってから出力し、改行する
-                                # 前の行（プログレスバー）の残骸を消すために行末クリアを入れる
-                                sys.stdout.write(f'\r{line.rstrip()}\033[K\n')
+                                status_info['training_started'] = True  # 学習が開始された
+                                continue
                             
-                            sys.stdout.flush()
+                            # プログレスバーの行か判定
+                            if stripped_line.startswith("steps:") and ("it/s" in line or "s/it" in line):
+                                # プログレスバー情報を保存
+                                status_info['progress'] = stripped_line
+                                status_info['training_started'] = True  # 学習が開始された
+                                
+                                # Jupyter環境では、一定間隔で更新（0.5秒ごと）
+                                current_time = time.time()
+                                if is_jupyter and (current_time - status_info['last_update'] >= 0.5):
+                                    status_info['last_update'] = current_time
+                                    clear_output(wait=True)
+                                    
+                                    # 重要なログがあれば表示
+                                    if status_info['important_logs']:
+                                        for log in status_info['important_logs']:
+                                            print(log)
+                                    
+                                    # epoch + プログレスバーを表示
+                                    if status_info['epoch']:
+                                        print(f"{status_info['epoch']} | {status_info['progress']}", flush=True)
+                                    else:
+                                        print(status_info['progress'], flush=True)
+                                
+                                # 非Jupyter環境では従来通り
+                                elif not is_jupyter:
+                                    display_line = status_info['progress']
+                                    if status_info['epoch']:
+                                        display_line = f"{status_info['epoch']} | {display_line}"
+                                    sys.stdout.write(f'\r{display_line}\033[K')
+                                    sys.stdout.flush()
+                            
+                            else:
+                                # 重要なログ（エラー、警告、完了メッセージなど）を検出
+                                is_important = any(keyword in stripped_line.lower() for keyword in 
+                                    ['error', 'warning', 'failed', 'エラー', '警告', '失敗'])
+                                
+                                if is_jupyter:
+                                    # 学習開始前は全て表示、開始後はフィルタリング
+                                    if not status_info['training_started']:
+                                        # 学習開始前: 空行とANSIエスケープシーケンスのみ除外
+                                        should_skip = (
+                                            not stripped_line or  # 空行
+                                            '\033[' in stripped_line or '[2K' in stripped_line or 
+                                            '[0m' in stripped_line or '[2m' in stripped_line or
+                                            '[2;36m' in stripped_line
+                                        )
+                                        
+                                        if not should_skip:
+                                            print(stripped_line, flush=True)
+                                    else:
+                                        # 学習開始後: 冗長なログを除外
+                                        should_skip = (
+                                            not stripped_line or  # 空行
+                                            # ANSIエスケープシーケンスを含む行
+                                            '\033[' in stripped_line or '[2K' in stripped_line or 
+                                            '[0m' in stripped_line or '[2m' in stripped_line or
+                                            '[2;36m' in stripped_line or
+                                            # 繰り返しメッセージを除外
+                                            'total optimization steps' in stripped_line.lower() or
+                                            'torch.bfloat16' in stripped_line or
+                                            'device:' in stripped_line or
+                                            # 警告メッセージを除外
+                                            'TF-TRT Warning' in stripped_line or
+                                            'TensorRT' in stripped_line or
+                                            'FutureWarning' in stripped_line or
+                                            'clean_up_tokenization_spaces' in stripped_line or
+                                            'warnings.warn' in stripped_line or
+                                            'transformers/tokenization' in stripped_line or
+                                            # タイムスタンプ付きログを除外
+                                            stripped_line.startswith('2025-') or
+                                            stripped_line.startswith('2024-') or
+                                            '/venv/lib/python' in stripped_line or
+                                            # 冗長なログは除外
+                                            any(skip in stripped_line.lower() for skip in 
+                                                ['preparing', 'loading', 'caching', 'initializing'])
+                                        )
+                                        
+                                        # 重要なログのみを保持・表示
+                                        if is_important and not should_skip:
+                                            status_info['important_logs'].append(stripped_line)
+                                            # ログが多すぎる場合は古いものを削除（最新5件のみ保持）
+                                            if len(status_info['important_logs']) > 5:
+                                                status_info['important_logs'].pop(0)
+                                else:
+                                    # 非Jupyter環境では従来通り全て表示
+                                    sys.stdout.write(f'\r{line.rstrip()}\033[K]\n')
+                                    sys.stdout.flush()
                         finally:
                             if print_lock:
                                 print_lock.release()
@@ -147,38 +232,21 @@ def run_command_and_stream_output(command, folder_name):
     stdout_thread.start()
     stderr_thread.start()
 
-    try:
-        process.wait() # プロセスの終了を待つ
-    except KeyboardInterrupt:
-        # ユーザーによる中断時、サブプロセスを確実に終了させる
-        print(f"\n[中断] ユーザーによる中断を検知しました。サブプロセス (PID: {process.pid}) を終了します...", flush=True)
-        try:
-            # まずは優しく終了
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                # 応答がない場合は強制終了
-                print(f"[中断] サブプロセスが応答しません。強制終了 (kill) します...", flush=True)
-                process.kill()
-                process.wait()
-        except Exception as e:
-            print(f"[中断] サブプロセスの終了中にエラーが発生しました: {e}", flush=True)
-        raise # 上位に例外を伝播させる
-    finally:
-        # 念のため、プロセスがまだ生きていれば終了させる
-        if process.poll() is None:
-             try:
-                process.terminate()
-                process.wait(timeout=1)
-             except:
-                try:
-                    process.kill()
-                except:
-                    pass
-
+    process.wait()
     stdout_thread.join()
     stderr_thread.join()
+    
+    # Jupyter環境では最終状態を表示
+    if is_jupyter:
+        clear_output(wait=True)
+        if status_info['important_logs']:
+            for log in status_info['important_logs']:
+                print(log)
+        if status_info['epoch'] or status_info['progress']:
+            if status_info['epoch']:
+                print(f"{status_info['epoch']} | {status_info['progress']}", flush=True)
+            else:
+                print(status_info['progress'], flush=True)
 
     return subprocess.CompletedProcess(
         args=command,
@@ -186,6 +254,7 @@ def run_command_and_stream_output(command, folder_name):
         stdout="".join(stdout_lines),
         stderr="".join(stderr_lines)
     )
+
 
 def run_training_with_retry(command, temp_config_file, config, program_directory, folder_name):
     """
@@ -245,6 +314,7 @@ def run_training_with_retry(command, temp_config_file, config, program_directory
                 return result
         
         return result
+
 
     except Exception as e:
         print(f"[{folder_name}] 学習コマンドの実行中に予期せぬエラーが発生しました: {e}")
@@ -507,225 +577,267 @@ print("="*54 + "\n")
 
 # 各フォルダに対して処理を実行
 for folder in folders:
-    temp_config_file = os.path.join(temp_directory, f'{folder}_{output_suffix}.toml')
-    original_model_path = None
-    temp_model_path = None
-    result = None
-    should_skip = False
+        temp_config_file = os.path.join(temp_directory, f'{folder}_{output_suffix}.toml')
+        original_model_path = None
+        temp_model_path = None
+        result = None
+        should_skip = False
 
-    try:
-        # ベース設定をコピーして、フォルダ固有の設定を追加
-        config = copy.deepcopy(base_config)
+        try:
+            # ベース設定をコピーして、フォルダ固有の設定を追加
+            config = copy.deepcopy(base_config)
 
-        config['train_data_dir'] = os.path.join(working_directory, folder)
-        config['output_name'] = f'{folder}_{output_suffix}'
-        config['output_dir'] = os.path.join(base_directory, paths.get('output_dir'))
+            config['train_data_dir'] = os.path.join(working_directory, folder)
+            config['output_name'] = f'{folder}_{output_suffix}'
+            config['output_dir'] = os.path.join(base_directory, paths.get('output_dir'))
 
-        # モデルファイルの移動処理
-        # `PSPACE_env.toml` では `pretrained_model_name_or_path` をファイル名のみで指定する想定
-        # そのため `model_dir` と結合して実際のパスを作成する
-        model_dir_setting = paths.get('model_dir', '.')
-        pretrained_name = paths.get('pretrained_model_name_or_path')
-        if not pretrained_name:
-            print(f"[{folder}] 警告: pretrained_model_name_or_path が設定されていません。モデルの移動をスキップします。", flush=True)
-            temp_model_path = None
-            should_skip = True
-        else:
-            original_model_path = os.path.join(base_directory, model_dir_setting, pretrained_name)
-            config['pretrained_model_name_or_path'] = original_model_path
-
-            if not os.path.isabs(original_model_path):
-                print(f"[{folder}] 警告: 作成した original_model_path が絶対パスではありません。モデルの移動をスキップします。", flush=True)
+            # モデルファイルの移動処理
+            # `PSPACE_env.toml` では `pretrained_model_name_or_path` をファイル名のみで指定する想定
+            # そのため `model_dir` と結合して実際のパスを作成する
+            model_dir_setting = paths.get('model_dir', '.')
+            pretrained_name = paths.get('pretrained_model_name_or_path')
+            if not pretrained_name:
+                print(f"[{folder}] 警告: pretrained_model_name_or_path が設定されていません。モデルの移動をスキップします。", flush=True)
                 temp_model_path = None
+                should_skip = True
             else:
-                model_filename = os.path.basename(original_model_path)
-                temp_model_path = os.path.join(temp_directory, model_filename)
+                original_model_path = os.path.join(base_directory, model_dir_setting, pretrained_name)
+                config['pretrained_model_name_or_path'] = original_model_path
 
-            if os.path.abspath(original_model_path) != os.path.abspath(temp_model_path):
-                if os.path.exists(original_model_path):
-                    print(f"[{folder}] モデルファイル {model_filename} を一時ディレクトリに移動します...", flush=True)
-                    shutil.move(original_model_path, temp_model_path)
-                    config['pretrained_model_name_or_path'] = temp_model_path
-                elif os.path.exists(temp_model_path):
-                    print(f"[{folder}] モデルファイル {model_filename} は既に一時ディレクトリに存在します。パスを更新します。", flush=True)
-                    config['pretrained_model_name_or_path'] = temp_model_path
+                if not os.path.isabs(original_model_path):
+                    print(f"[{folder}] 警告: 作成した original_model_path が絶対パスではありません。モデルの移動をスキップします。", flush=True)
+                    temp_model_path = None
                 else:
-                    print(f"[{folder}] エラー: モデルファイルが見つかりません: {original_model_path}", flush=True)
-                    skipped_folders.append(f"{folder} (モデルファイル欠落のためスキップ)")
-                    should_skip = True
-            else:
-                print(f"[{folder}] モデルファイルは既に一時ディレクトリにあります。", flush=True)
-        
+                    model_filename = os.path.basename(original_model_path)
+                    temp_model_path = os.path.join(temp_directory, model_filename)
+
+                if os.path.abspath(original_model_path) != os.path.abspath(temp_model_path):
+                    if os.path.exists(original_model_path):
+                        print(f"[{folder}] モデルファイル {model_filename} を一時ディレクトリに移動します...", flush=True)
+                        shutil.move(original_model_path, temp_model_path)
+                        config['pretrained_model_name_or_path'] = temp_model_path
+                    elif os.path.exists(temp_model_path):
+                        print(f"[{folder}] モデルファイル {model_filename} は既に一時ディレクトリに存在します。パスを更新します。", flush=True)
+                        config['pretrained_model_name_or_path'] = temp_model_path
+                    else:
+                        print(f"[{folder}] エラー: モデルファイルが見つかりません", flush=True)
+                        print(f"  元の場所: {original_model_path}", flush=True)
+                        print(f"  一時ディレクトリ: {temp_model_path}", flush=True)
+                        print(f"\nモデルファイルが存在しないため、処理を中止します。", flush=True)
+                        sys.exit(1)
+                else:
+                    print(f"[{folder}] モデルファイルは既に一時ディレクトリにあります。", flush=True)
+            
+            if should_skip:
+                continue
+
+            with open(temp_config_file, 'w', encoding='utf-8') as f:
+                toml.dump(config, f)
+
+            # コマンドを構築
+            command = (
+                f'{accelerate_path} launch '
+                f'--dynamo_backend {acc_opts.get("dynamo_backend", "no")} '
+                f'--dynamo_mode {acc_opts.get("dynamo_mode", "default")} '
+                f'--mixed_precision {acc_opts.get("mixed_precision", "bf16")} '
+                f'--num_processes {acc_opts.get("num_processes", 1)} '
+                f'--num_machines {acc_opts.get("num_machines", 1)} '
+                f'--num_cpu_threads_per_process {acc_opts.get("num_cpu_threads_per_process", 2)} '
+                f'"{train_script_path}" '
+                f'--config_file "{temp_config_file}" '
+                f'--log_prefix={train_opts.get("log_prefix", "xl-loha")} '
+            )
+
+            result = run_training_with_retry(command, temp_config_file, config, program_directory, folder)
+
+        finally:
+            # モデルを元の場所に戻す
+            if original_model_path and temp_model_path and os.path.exists(temp_model_path):
+                if os.path.abspath(original_model_path) != os.path.abspath(temp_model_path):
+                    print(f"[{folder}] モデルファイル {os.path.basename(temp_model_path)} を元の場所に戻します...", flush=True)
+                    
+                    # クリーンアップ中のSIGINT (CTRL+C) を一時的にブロックして、移動処理を保護する
+                    original_sigint_handler = signal.getsignal(signal.SIGINT)
+                    signal.signal(signal.SIGINT, signal.SIG_IGN)
+                    
+                    try:
+                        # プロセスがファイルを完全に解放するまで少し待つ
+                        time.sleep(1)
+                        
+                        # リトライロジック付きでコピー＆削除
+                        # shutil.move()ではなくcopy+deleteを使用してファイル破損を防ぐ
+                        max_retries = 5
+                        for i in range(max_retries):
+                            try:
+                                os.makedirs(os.path.dirname(original_model_path), exist_ok=True)
+                                
+                                # 進捗を表示しながらコピー（10%ごと）
+                                file_size = os.path.getsize(temp_model_path)
+                                copied = 0
+                                chunk_size = 10 * 1024 * 1024  # 10MB chunks
+                                last_reported_progress = 0
+                                
+                                with open(temp_model_path, 'rb') as src:
+                                    with open(original_model_path, 'wb') as dst:
+                                        while True:
+                                            chunk = src.read(chunk_size)
+                                            if not chunk:
+                                                break
+                                            dst.write(chunk)
+                                            copied += len(chunk)
+                                            progress = int((copied / file_size) * 100)
+                                            
+                                            # 10%ごとに進捗を表示
+                                            if progress >= last_reported_progress + 10:
+                                                print(f"[{folder}] コピー進捗: {progress}%", flush=True)
+                                                last_reported_progress = progress
+                                
+                                # メタデータをコピー
+                                shutil.copystat(temp_model_path, original_model_path)
+                                
+                                # コピーが成功したら元ファイルを削除
+                                os.remove(temp_model_path)
+                                
+                                print(f"[{folder}] モデルファイルを正常に復元しました。", flush=True)
+                                break
+                            except PermissionError:
+                                if i < max_retries - 1:
+                                    print(f"[{folder}] ファイルがロックされています。2秒後に再試行します... ({i+1}/{max_retries})", flush=True)
+                                    time.sleep(2)
+                                else:
+                                    raise
+                            except Exception as e:
+                                # コピーに失敗した場合、すでに作成されたファイルを削除
+                                if os.path.exists(original_model_path):
+                                    try:
+                                        os.remove(original_model_path)
+                                    except:
+                                        pass
+                                raise
+                    except Exception as e:
+                        print(f"[{folder}] 警告: モデルファイルの復元に失敗しました: {e}", flush=True)
+                        print(f"[{folder}] 重要: モデルファイルは一時ディレクトリに残っています: {temp_model_path}", flush=True)
+                    finally:
+                        # シグナルハンドラを復元
+                        signal.signal(signal.SIGINT, original_sigint_handler)
+
+
         if should_skip:
             continue
 
-        with open(temp_config_file, 'w', encoding='utf-8') as f:
-            toml.dump(config, f)
-
-        # コマンドを構築
-        command = (
-            f'{accelerate_path} launch '
-            f'--dynamo_backend {acc_opts.get("dynamo_backend", "no")} '
-            f'--dynamo_mode {acc_opts.get("dynamo_mode", "default")} '
-            f'--mixed_precision {acc_opts.get("mixed_precision", "bf16")} '
-            f'--num_processes {acc_opts.get("num_processes", 1)} '
-            f'--num_machines {acc_opts.get("num_machines", 1)} '
-            f'--num_cpu_threads_per_process {acc_opts.get("num_cpu_threads_per_process", 2)} '
-            f'"{train_script_path}" '
-            f'--config_file "{temp_config_file}" '
-            f'--log_prefix={train_opts.get("log_prefix", "xl-loha")} '
-        )
-
-        result = run_training_with_retry(command, temp_config_file, config, program_directory, folder)
-
-    finally:
-        # モデルを元の場所に戻す
-        if original_model_path and temp_model_path and os.path.exists(temp_model_path):
-            if os.path.abspath(original_model_path) != os.path.abspath(temp_model_path):
-                print(f"[{folder}] モデルファイル {os.path.basename(temp_model_path)} を元の場所に戻します...", flush=True)
-                
-                # クリーンアップ中のSIGINT (CTRL+C) を一時的にブロックして、移動処理を保護する
-                original_sigint_handler = signal.getsignal(signal.SIGINT)
-                signal.signal(signal.SIGINT, signal.SIG_IGN)
-                
-                try:
-                    # リトライロジック付きで移動
-                    max_retries = 5
-                    for i in range(max_retries):
-                        try:
-                            os.makedirs(os.path.dirname(original_model_path), exist_ok=True)
-                            shutil.move(temp_model_path, original_model_path)
-                            print(f"[{folder}] モデルファイルを正常に復元しました。", flush=True)
-                            break
-                        except PermissionError:
-                            if i < max_retries - 1:
-                                print(f"[{folder}] ファイルがロックされています。1秒後に再試行します... ({i+1}/{max_retries})", flush=True)
-                                time.sleep(1)
-                            else:
-                                raise
-                        except Exception:
-                            raise
-                except Exception as e:
-                    print(f"[{folder}] 警告: モデルファイルの復元に失敗しました: {e}", flush=True)
-                    print(f"[{folder}] 重要: モデルファイルは一時ディレクトリに残っています: {temp_model_path}", flush=True)
-                finally:
-                    # シグナルハンドラを復元
-                    signal.signal(signal.SIGINT, original_sigint_handler)
-
-    if should_skip:
-        continue
-
-    # 実行結果のハンドリング
-    if result is None or result.returncode != 0:
-        print(f"処理失敗: {folder}。フォルダは削除されませんでした。")
-        if result and result.stderr:
-            print("----- Stderr -----")
-            print(result.stderr.strip())
-            print("--------------------")
-        try:
-            if os.path.exists(temp_config_file):
-                os.remove(temp_config_file)
-        except Exception as e:
-            print(f"警告: {temp_config_file} の削除に失敗しました: {e}", flush=True)
-        continue
-
-    # 成功した場合の出力を表示
-    print(f"[{folder}] の学習が正常に完了しました。")
-    if result.stdout:
-        print("----- Stdout -----")
-        print(result.stdout.strip())
-        print("--------------------")
-
-    # rcloneでファイルをアップロード
-    try:
-        output_dir = os.path.join(base_directory, paths.get('output_dir'))
-        rclone_config_path = os.path.join(program_directory, 'rclone.conf')
-        print("学習済みモデルをアップロードします...", flush=True)
-        remote_path = env_config.get('rclone', {}).get('remote_path', 'google:runpod/AI')
-        rclone_target = f"{remote_path.rstrip('/')}/output"
-        rclone_command = f"rclone --config {rclone_config_path} copy {output_dir} {rclone_target}"
-        rclone_result = subprocess.run(rclone_command, shell=True, capture_output=True, text=True)
-        if rclone_result.returncode != 0:
-            rclone_output = (rclone_result.stdout or "") + "\n" + (rclone_result.stderr or "")
-            if 'storageQuotaExceeded' in rclone_output or "Drive storage quota" in rclone_output or "The user's Drive storage quota has been exceeded" in rclone_output:
-                print("エラー: Google Drive の容量が超過しています。アップロードを中止し、プログラムを終了します。フォルダは削除されません。", flush=True)
-                print("rclone 出力:", flush=True)
-                print(rclone_output, flush=True)
-                sys.exit(1)
-            else:
-                print(f"アップロードに失敗しました（returncode={rclone_result.returncode}）。フォルダは削除されません。出力:", flush=True)
-                print(rclone_output, flush=True)
-                try:
+        # 実行結果のハンドリング
+        if result is None or result.returncode != 0:
+            print(f"処理失敗: {folder}。フォルダは削除されませんでした。")
+            if result and result.stderr:
+                print("----- Stderr -----")
+                print(result.stderr.strip())
+                print("--------------------")
+            try:
+                if os.path.exists(temp_config_file):
                     os.remove(temp_config_file)
-                except Exception as e:
-                    print(f"警告: {temp_config_file} の削除に失敗しました: {e}", flush=True)
-                continue
-    except Exception as e:
-        print(f"警告: rclone アップロード処理中に予期しないエラーが発生しました: {e}", flush=True)
-        try:
-            os.remove(temp_config_file)
-        except Exception as e2:
-            print(f"警告: {temp_config_file} の削除に失敗しました: {e2}", flush=True)
-        continue
-
-    print("アップロードが完了しました。", flush=True)
-
-    # Google Drive のゴミ箱を空にする
-    try:
-        empty_trash = env_config.get('rclone', {}).get('empty_trash_after_upload', True)
-        if empty_trash:
-            try:
-                remote_name = remote_path.split(':', 1)[0]
-            except Exception:
-                remote_name = remote_path
-            print(f"rclone による Google Drive のゴミ箱空にする処理を実行します: {remote_name}:", flush=True)
-            cleanup_cmd = f"rclone --config {rclone_config_path} cleanup {remote_name}:"
-            cleanup_result = subprocess.run(cleanup_cmd, shell=True, capture_output=True, text=True)
-            if cleanup_result.returncode == 0:
-                print("Google Drive のゴミ箱を空にしました（rclone cleanup 成功）。", flush=True)
-            else:
-                print("警告: Google Drive のゴミ箱を空にする際にエラーが発生しました。rclone 出力:", flush=True)
-                print((cleanup_result.stdout or "") + "\n" + (cleanup_result.stderr or ""), flush=True)
-    except Exception as e:
-        print(f"警告: rclone cleanup 処理中に予期しないエラーが発生しました: {e}", flush=True)
-
-    # /workspace/output の中身を削除
-    try:
-        output_dir_to_clear = output_dir
-        print(f"'{output_dir_to_clear}' の中身を消去します...", flush=True)
-        for item in os.listdir(output_dir_to_clear):
-            item_path = os.path.join(output_dir_to_clear, item)
-            try:
-                if os.path.isfile(item_path) or os.path.islink(item_path):
-                    os.unlink(item_path)
-                elif os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
             except Exception as e:
-                print(f'{item_path} の削除中にエラーが発生しました: {e}', flush=True)
-        print(f"'{output_dir_to_clear}' の中身を消去しました。", flush=True)
-    except Exception as e:
-        print(f"警告: output_dir の消去処理中に予期しないエラーが発生しました: {e}", flush=True)
+                print(f"警告: {temp_config_file} の削除に失敗しました: {e}", flush=True)
+            continue
 
-    # 成功時のみフォルダ削除
-    try:
-        folder_path = os.path.join(working_directory, folder)
-        if args.test:
-             print(f"テストモード: {folder_path} の削除をスキップします。", flush=True)
-             processed_folders.append(folder)
-        else:
-            try:
-                shutil.rmtree(folder_path)
-                print(f'正常終了: {folder_path} を削除しました。', flush=True)
-                processed_folders.append(folder)
-            except OSError as e:
-                print(f"エラー: {folder_path} の削除に失敗しました - {e}", flush=True)
-        
+        # 成功した場合の出力を表示
+        print(f"[{folder}] の学習が正常に完了しました。")
+        if result.stdout:
+            print("----- Stdout -----")
+            print(result.stdout.strip())
+            print("--------------------")
+
+        # rcloneでファイルをアップロード
         try:
-            os.remove(temp_config_file)
+            output_dir = os.path.join(base_directory, paths.get('output_dir'))
+            rclone_config_path = os.path.join(program_directory, 'rclone.conf')
+            print("学習済みモデルをアップロードします...", flush=True)
+            remote_path = env_config.get('rclone', {}).get('remote_path', 'google:runpod/AI')
+            rclone_target = f"{remote_path.rstrip('/')}/output"
+            rclone_command = f"rclone --config {rclone_config_path} copy {output_dir} {rclone_target}"
+            rclone_result = subprocess.run(rclone_command, shell=True, capture_output=True, text=True)
+            if rclone_result.returncode != 0:
+                rclone_output = (rclone_result.stdout or "") + "\n" + (rclone_result.stderr or "")
+                if 'storageQuotaExceeded' in rclone_output or "Drive storage quota" in rclone_output or "The user's Drive storage quota has been exceeded" in rclone_output:
+                    print("エラー: Google Drive の容量が超過しています。アップロードを中止し、プログラムを終了します。フォルダは削除されません。", flush=True)
+                    print("rclone 出力:", flush=True)
+                    print(rclone_output, flush=True)
+                    sys.exit(1)
+                else:
+                    print(f"アップロードに失敗しました（returncode={rclone_result.returncode}）。フォルダは削除されません。出力:", flush=True)
+                    print(rclone_output, flush=True)
+                    try:
+                        os.remove(temp_config_file)
+                    except Exception as e:
+                        print(f"警告: {temp_config_file} の削除に失敗しました: {e}", flush=True)
+                    continue
         except Exception as e:
-            print(f"警告: {temp_config_file} の削除に失敗しました: {e}", flush=True)
-    except Exception as e:
-        print(f"警告: フォルダ削除処理中に予期しないエラーが発生しました: {e}", flush=True)
+            print(f"警告: rclone アップロード処理中に予期しないエラーが発生しました: {e}", flush=True)
+            try:
+                os.remove(temp_config_file)
+            except Exception as e2:
+                print(f"警告: {temp_config_file} の削除に失敗しました: {e2}", flush=True)
+            continue
+
+        print("アップロードが完了しました。", flush=True)
+
+        # Google Drive のゴミ箱を空にする
+        try:
+            empty_trash = env_config.get('rclone', {}).get('empty_trash_after_upload', True)
+            if empty_trash:
+                try:
+                    remote_name = remote_path.split(':', 1)[0]
+                except Exception:
+                    remote_name = remote_path
+                print(f"rclone による Google Drive のゴミ箱空にする処理を実行します: {remote_name}:", flush=True)
+                cleanup_cmd = f"rclone --config {rclone_config_path} cleanup {remote_name}:"
+                cleanup_result = subprocess.run(cleanup_cmd, shell=True, capture_output=True, text=True)
+                if cleanup_result.returncode == 0:
+                    print("Google Drive のゴミ箱を空にしました（rclone cleanup 成功）。", flush=True)
+                else:
+                    print("警告: Google Drive のゴミ箱を空にする際にエラーが発生しました。rclone 出力:", flush=True)
+                    print((cleanup_result.stdout or "") + "\n" + (cleanup_result.stderr or ""), flush=True)
+        except Exception as e:
+            print(f"警告: rclone cleanup 処理中に予期しないエラーが発生しました: {e}", flush=True)
+
+        # /workspace/output の中身を削除
+        try:
+            output_dir_to_clear = output_dir
+            print(f"'{output_dir_to_clear}' の中身を消去します...", flush=True)
+            for item in os.listdir(output_dir_to_clear):
+                item_path = os.path.join(output_dir_to_clear, item)
+                try:
+                    if os.path.isfile(item_path) or os.path.islink(item_path):
+                        os.unlink(item_path)
+                    elif os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                except Exception as e:
+                    print(f'{item_path} の削除中にエラーが発生しました: {e}', flush=True)
+            print(f"'{output_dir_to_clear}' の中身を消去しました。", flush=True)
+        except Exception as e:
+            print(f"警告: output_dir の消去処理中に予期しないエラーが発生しました: {e}", flush=True)
+
+        # 成功時のみフォルダ削除
+        try:
+            folder_path = os.path.join(working_directory, folder)
+            if args.test:
+                print(f"テストモード: {folder_path} の削除をスキップします。", flush=True)
+                processed_folders.append(folder)
+            else:
+                try:
+                    shutil.rmtree(folder_path)
+                    print(f'正常終了: {folder_path} を削除しました。', flush=True)
+                    processed_folders.append(folder)
+                except OSError as e:
+                    print(f"エラー: {folder_path} の削除に失敗しました - {e}", flush=True)
+            
+            try:
+                os.remove(temp_config_file)
+            except Exception as e:
+                print(f"警告: {temp_config_file} の削除に失敗しました: {e}", flush=True)
+        except Exception as e:
+            print(f"警告: フォルダ削除処理中に予期しないエラーが発生しました: {e}", flush=True)
+
+
 
 
 # 全ての処理が完了した後にメッセージを表示
